@@ -27,7 +27,7 @@ LDFLAGS="-L${LIBDIR} -Wall,-rpath-link,${LIBDIR},-noinhibit-exec"
 
 LIBS="-lSDL -lGLESv2 -lpdl"
 MUPDF_LIBS="-I${MuPDF}/fitz -I${MuPDF}/pdf -I${MuPDF}/xps -I${MuPDF}/scripts"
-MUPDF_LDFLAGS="-L${MUPDF_LIBDIR} -Wall -pipe -g -O3 -mcpu=arm1136jf-s -mfpu=vfp -mfloat-abi=softfp -ffast-math"
+MUPDF_LDFLAGS="-L${MUPDF_LIBDIR} -Wall -pipe -g -mcpu=arm1136jf-s -mfpu=vfp -mfloat-abi=softfp -ffast-math"
 MUPDF_LDFLAGS+=" -fsingle-precision-constant"
 STATIC_LIBDIR="${MuPDF}/build/release"
 rm plugin/*.o

@@ -11,6 +11,19 @@
 #include "muxps.h"
 #include "pdfapp.h"
 
+typedef struct Gesutre_Event{
+    uint16_t pos_x,pos_y;
+    uint16_t distance;
+    uint16_t distance_x, distance_y;
+    uint8_t interim_angle;
+    uint8_t interim_direction;
+    uint8_t  direction;
+    float	angle;
+    float scale;
+    float rotaion;
+}Gesture_Event;
+
+Gesture_Event gesture_data;
 
 
 SDL_Surface *Surface;	//Screen surface 
@@ -37,8 +50,7 @@ SDL_bool pinch;
 pdfapp_t app;
 SDL_bool Paused = SDL_FALSE;
 
-
-void hadle_events(SDL_Event event);
+void handle_events(SDL_Event event);
 
 static void draw_pdf()
 {
@@ -132,6 +144,9 @@ int main(int argc, char** argv)
     PDL_CallJS("ready", NULL, 0);
 
 	memset(&pitch_action, 0, sizeof(PDF_Pitch_t));
+
+	//gesture_data = (Gesture_Event *)malloc(sizeof(Gesture_Event));
+	memset(&gesture_data, 0, sizeof(Gesture_Event));
 	pitch_action.scale = 1.0;
 	
 	Surface = SDL_SetVideoMode(0, 0, 0, SDL_SWSURFACE);
@@ -192,7 +207,7 @@ int main(int argc, char** argv)
 		}			
 	else {
 		while(SDL_PollEvent(&Event)) {
-			hadle_events(Event);
+			handle_events(Event);
 //			switch (Event.type) {
 #if 0
 				case SDL_MOUSEBUTTONDOWN:
@@ -354,36 +369,59 @@ int main(int argc, char** argv)
 }
 
 
-int16_t distance = 0;
+#define HOLD_TIMEOUT	800	//800ms
+#define MIN_SWIPE_TIME	200 //200ms
+#define MIN_DRAG_DIST	20	//20px
+#define TAP_MAX_DIST	10	//10px
+
+uint16_t distance = 0;
 uint16_t angle = 0;
 uint8_t  direction = 0;
 uint8_t fingers = 0;
 SDL_bool first = SDL_FALSE;
 uint16_t pos_start_x, pos_start_y;
 uint16_t pos_move_x, pos_move_y;
+///TODO: -_-" 
+uint16_t pos_second_x, pos_second_y;
+uint16_t second_move_x, second_move_y;
 
 uint32_t touch_start_time = 0;
 uint32_t pre_tap_end_time = 0;
-uint32_t hold_timer = 0;
 uint16_t prev_tap_posX, pre_tapY;
 uint16_t offset_x, offset_y;
 
 SDL_bool mousedown = SDL_FALSE;
-
+SDL_TimerID hold_timer = NULL;
 SDL_Event event_start, event_move, event_end;
 
 enum {
-	GESTURE_NULL = SDL_USEREVENT + 1,
+	GESTURE_NULL = SDL_USEREVENT,
 	GESTURE_HOLD,
 	GESTURE_TAP,	
 	GESTURE_SWIPE,
+	GESTURE_DRAG_START,
 	GESTURE_DRAG,
+	GESTURE_DRAG_END,
+//	GESTURE_TRANSFORM_START,
 	GESTURE_TRANSFORM,
+//	GESTURE_TRANSFORM_END,
 }GESTURE_TYPE;
 	
 //GESTURE_TYPE 
 uint8_t _gesture = GESTURE_NULL;
 
+
+
+float calc_angle(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+{
+	return atan2(y0 - y1, x0 - x1) * 180 / 3.14;
+}
+
+
+float calc_rotation(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+{
+
+}
 uint8_t count_fingers(SDL_Event event) 
 {
 	if(SDL_MOUSEBUTTONDOWN == event.type)
@@ -393,92 +431,219 @@ uint8_t count_fingers(SDL_Event event)
 }
 
 
-void triggle_event(uint8_t gesture_type) 
+void triggle_event(uint8_t gesture_type, Gesture_Event *g_event) 
 {
 	SDL_Event Event;																																																														 
-	Event.user.type = gesture_type; 																																																	 
+	Event.user.type = gesture_type;
+	Event.user.data1 = g_event;
 	SDL_PushEvent(&Event);	
 }
+
+
+void gesture_tap(SDL_Event event) 
+{
+	uint32_t now, touch_time;
+	Gesture_Event *p_gesture_data = &gesture_data;
+
+	int16_t distance_x = abs(event.button.x - pos_start_x);
+	int16_t distance_y = abs(event.button.y - pos_start_y);
+	
+	now = SDL_GetTicks();
+	touch_time = now - touch_start_time;
+
+	if(touch_time > HOLD_TIMEOUT) {
+		return;
+	}
+
+	if(MAX(distance_x,distance_y) < TAP_MAX_DIST) {
+		_gesture = GESTURE_TAP;
+		p_gesture_data->pos_x = event.button.x;
+		p_gesture_data->pos_y = event.button.y;
+		triggle_event(_gesture, &gesture_data);
+		
+	}
+	
+
+}
+
 
 SDL_NewTimerCallback hold(Uint32 interval, void *param)
 {
 	// push a bogus event into the queue to wake up main thread
 	if(_gesture == GESTURE_HOLD) {
 		SDL_Event Event;                                                                                                                                                                                                                                                         
-		Event.user.type = GESTURE_HOLD;                                                                                                                                                                                                      
+		Event.user.type = GESTURE_HOLD;
 		SDL_PushEvent(&Event);  
 	}
     return SDL_FALSE;
 }  
 
-
 void gesture_hold(SDL_Event event) 
 {
 	_gesture = GESTURE_HOLD;
-	if(NULL  == SDL_AddTimer(800,hold,NULL))
-		exit(0);
+	
+	if(hold_timer) {
+		SDL_RemoveTimer(hold_timer);
+	}
+	if(fingers == 1) {
+		hold_timer = SDL_AddTimer(HOLD_TIMEOUT, hold, NULL);
+		
+		if(!hold_timer) {
+			exit(0);
+		}
+	}
+}
+
+void gesture_swipe(SDL_Event event) 
+{	
+	float angle;
+	uint32_t now, touch_time;
+	Gesture_Event *p_gesture_data = &gesture_data;
+
+	if(pos_move_x == 0 && pos_move_y == 0) {
+		return;
+	}
+	
+	int16_t distance_x = event.button.x - pos_start_x;
+	int16_t distance_y = event.button.y - pos_start_y;
+	
+	uint16_t s_distance = sqrt(distance_x * distance_x + distance_y * distance_y);
+	now = SDL_GetTicks();
+	touch_time = now - touch_start_time;
+	
+	if(touch_time < MIN_SWIPE_TIME && s_distance > MIN_DRAG_DIST) {
+		_gesture = GESTURE_SWIPE;
+		angle = calc_angle(pos_start_x, pos_start_y, pos_move_x, pos_move_y);
+		p_gesture_data->distance = distance;
+		p_gesture_data->distance_x = distance_x;
+		p_gesture_data->distance_y = distance_y;
+		p_gesture_data->angle = angle;
+		triggle_event(_gesture, &gesture_data);
+	}
+
+}
+void gesture_drag(SDL_Event event) 
+{
+	uint32_t now, touch_time;
+
+	Gesture_Event *p_gesture_data = &gesture_data;
+	
+	int16_t distance_x = pos_move_x - pos_start_x;
+	int16_t distance_y = pos_move_y - pos_start_y;
+	
+	distance = sqrt(distance_x * distance_x + distance_y * distance_y);
+	now = SDL_GetTicks();
+	touch_time = now - touch_start_time;
+
+	if((distance > MIN_DRAG_DIST && touch_time > MIN_SWIPE_TIME)|| _gesture == GESTURE_DRAG) {
+		_gesture = GESTURE_DRAG;
+
+		if(first) {
+			_gesture = GESTURE_DRAG_START;
+			first = SDL_FALSE;
+		}
+		if(!mousedown) {
+			_gesture = GESTURE_DRAG_END;
+		}
+		p_gesture_data->distance = distance;
+		p_gesture_data->distance_x = distance_x;
+		p_gesture_data->distance_y = distance_y;
+		triggle_event(_gesture, &gesture_data);
+	}
 }
 
 SDL_bool gesture_transfrom(SDL_Event event) 
 {
+	float x, y;
+	float start_distance, end_distance;
+	float scale, temp;
+	
+	Gesture_Event *p_gesture_data = &gesture_data;
+	
 	if(fingers != 2) {
 		return SDL_FALSE;
 	}
-	_gesture = GESTURE_TRANSFORM;
+	x = pos_start_x - pos_second_x;
+	y = pos_start_y - pos_second_y;
+	start_distance = sqrt(x*x + y*y);
 	
-	triggle_event(_gesture);
-	return SDL_TRUE;
-
-
-}
-
-void gesture_drag(SDL_Event event) 
-{
-	int16_t distance_x = pos_move_x - pos_start_x;
-	int16_t distance_y = pos_move_y - pos_start_y;
-
-	distance = sqrt(distance_x * distance_x + distance_y * distance_y);
-
-	if(distance > 20 || _gesture == GESTURE_DRAG) {
-		_gesture = GESTURE_DRAG;
-
-		if(first) {
-			first = SDL_FALSE;
-		}
-		triggle_event(_gesture);
-		printf("%d drag distance  ",distance);
+	
+	x = pos_move_x - second_move_x;
+	y = pos_move_y - second_move_y;
+	end_distance = sqrt(x*x + y*y);
+	scale = end_distance / start_distance;
+	if(_gesture != GESTURE_DRAG && 
+			(_gesture == GESTURE_TRANSFORM || fabs(1 - scale) > 0.1)){
+		_gesture = GESTURE_TRANSFORM;
+		p_gesture_data->scale = scale;
+		triggle_event(_gesture, &gesture_data);
 	}
-
+	return SDL_TRUE;
 }
 
-
-void hadle_events(SDL_Event event)
+void handle_events(SDL_Event event)
 {
 	static uint32_t count_hold;
+	Gesture_Event *temp;
+	
+	temp = event.user.data1;
 	switch (event.type) {
 			case SDL_MOUSEBUTTONDOWN:
 					first = SDL_TRUE;
 					mousedown = SDL_TRUE;
 					event_start = event;
 					touch_start_time = SDL_GetTicks();
-					fingers = count_fingers(event);
-					pos_start_x = event.button.x;
-					pos_start_y = event.button.y;
-					printf("%3d fingers on screen:%4d, %4d\n",fingers, event.button.x, event.button.y);
+					fingers += 1; // count_fingers(event);
+					if(event.button.which == 0) {
+						pos_start_x = event.button.x;
+						pos_start_y = event.button.y;
+					}
+					if(event.button.which == 1) {
+						pos_second_x = event.button.x;
+						pos_second_y = event.button.y;
+					}
+					printf("%3d fingers on screen:%4d, %4d\n",event.button.which, event.button.x, event.button.y);
 					gesture_hold(event);
 				break;
 			case SDL_MOUSEMOTION:
 					if(!mousedown)
 						break;
 					event_move = event;
-					pos_move_x = event.button.x;
-					pos_move_y = event.button.y;
+					
+					if(event.button.which == 0) {
+						pos_move_x = event.button.x;
+						pos_move_y = event.button.y;
+					}
+					if(event.button.which == 1) {
+						second_move_x = event.button.x;
+						second_move_y = event.button.y;
+					}
 					if(!gesture_transfrom(event)) {
 						gesture_drag(event);
 					}
 				//	printf("finger move to: %4d, %d\n", event.button.x, event.button.y);
 				break;
 			case SDL_MOUSEBUTTONUP:
+				if(fingers > 0)
+					fingers--;
+				
+				if(!mousedown || (_gesture!= GESTURE_TRANSFORM && fingers > 0))
+					break;
+
+				mousedown = SDL_FALSE;
+				
+				gesture_swipe(event);
+
+				if(_gesture == GESTURE_DRAG) {
+						gesture_drag(event);
+				}
+				else if(_gesture == GESTURE_TRANSFORM) {
+
+				}
+				else {
+					///TODO: triggle Tap event
+					gesture_tap(event); 
+				}
 				mousedown = SDL_FALSE;
 				_gesture = GESTURE_NULL;
 				break;
@@ -489,22 +654,34 @@ void hadle_events(SDL_Event event)
 
 	switch(event.user.type) {
 		case GESTURE_HOLD:
-				printf("Fire Hold .....................%d!\n", count_hold++);
+				printf("Hold .................%4d, %4d\n", pos_start_x,pos_start_y);
 			break;
+			
+			case GESTURE_DRAG_START:
+				printf("Start drag --Distance:%4d\n",temp->distance);
+			break;
+			
 			case GESTURE_DRAG:
-				printf("Fire Drag ----------%d!\n", count_hold++);
+				printf("Draging -----Distance:%4d\n",temp->distance);
 			break;
+			
+			case GESTURE_DRAG_END:
+				printf("End drag ----Distance:%4d\n",temp->distance);
+			break;
+			
 			case GESTURE_TAP:
-				printf("Fire Tap ----------%d!\n", count_hold++);
+				printf("Tap ----------%4d, %4d\n", pos_start_x,pos_start_y);
 			break;
+			
 			case GESTURE_TRANSFORM:
-				printf("Fire Transfrom ----------%d!\n", count_hold++);
+				printf("Transfrom ------scale:%2.4f\n",temp->scale);
 			break;
+			
+			case GESTURE_SWIPE:
+				printf("Fire Swipe ---------Angle:%3.2f\n", temp->angle);
+				break;
 		default:
 			break;
 	}
-
-
-
-
 }
+
