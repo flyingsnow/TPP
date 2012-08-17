@@ -1,0 +1,11 @@
+{
+	"id": "com.ivan.touch-mupdf",
+	"version": "1.0.0",
+	"vendor": "Ivan",
+	"type": "web",
+	"main": "index.html",
+	"title": "touch-mupdf",
+	"icon": "icon.png",
+    "plug-ins": true,
+	"uiRevision":2
+}
